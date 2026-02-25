@@ -1,80 +1,134 @@
 from flask import Flask, render_template, request, send_file, jsonify
-import csv
+import sqlite3
+import os
 from datetime import datetime
+import csv
 
 app = Flask(__name__)
 
-# Load events from CSV
-def load_events():
-    events = []
-    with open('logs/events.csv', newline='') as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            events.append(row)
-    return events
+# --- DATABASE SETUP ---
+DB_PATH = "piglet_crushing.db"
 
-# Convert duration string "HH:MM:SS" to seconds
-def duration_to_seconds(duration):
-    h, m, s = [int(x) for x in duration.split(":")]
-    return h*3600 + m*60 + s
+def init_db():
+    """Initialize the SQLite database and table if not exists"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            crushing_id TEXT,
+            date TEXT,
+            event_timestamp TEXT,
+            crushing_duration TEXT,
+            alarm TEXT,
+            alarm_timestamp TEXT,
+            image_path TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-# Main page
+# Call once at startup
+init_db()
+
+# --- HELPER FUNCTIONS ---
+def save_event(event):
+    """Save an event dict to the database"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO events (crushing_id, date, event_timestamp, crushing_duration, alarm, alarm_timestamp, image_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        event['Crushing ID'],
+        event['Date'],
+        event['Event Timestamp'],
+        event['Crushing Duration'],
+        event['Alarm'],
+        event['Alarm Timestamp'],
+        event['Image Path']
+    ))
+    conn.commit()
+    conn.close()
+
+def query_events(filters=None):
+    """Query events from the database with optional filters"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    query = "SELECT * FROM events WHERE 1=1"
+    params = []
+
+    if filters:
+        if 'start_date' in filters:
+            query += " AND date >= ?"
+            params.append(filters['start_date'])
+        if 'end_date' in filters:
+            query += " AND date <= ?"
+            params.append(filters['end_date'])
+        if 'min_duration' in filters:
+            query += " AND (cast(strftime('%s', crushing_duration) as integer) >= ?)"
+            params.append(filters['min_duration'])
+        if 'max_duration' in filters:
+            query += " AND (cast(strftime('%s', crushing_duration) as integer) <= ?)"
+            params.append(filters['max_duration'])
+        if 'min_id' in filters:
+            query += " AND id >= ?"
+            params.append(filters['min_id'])
+        if 'max_id' in filters:
+            query += " AND id <= ?"
+            params.append(filters['max_id'])
+
+    c.execute(query, params)
+    results = [dict(row) for row in c.fetchall()]
+    conn.close()
+    return results
+
+# --- ROUTES ---
 @app.route('/')
 def index():
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return render_template('index.html', current_time=current_time)
 
-# API to fetch events with filters
 @app.route('/api/events')
 def api_events():
-    events = load_events()
-    start_date = request.args.get('start_date')
-    end_date = request.args.get('end_date')
-    min_duration = request.args.get('min_duration')
-    max_duration = request.args.get('max_duration')
-    min_id = request.args.get('min_id')
-    max_id = request.args.get('max_id')
+    filters = {
+        'start_date': request.args.get('start_date'),
+        'end_date': request.args.get('end_date'),
+        'min_duration': request.args.get('min_duration'),
+        'max_duration': request.args.get('max_duration'),
+        'min_id': request.args.get('min_id'),
+        'max_id': request.args.get('max_id'),
+    }
+    # Remove None values
+    filters = {k: v for k, v in filters.items() if v is not None}
+    events = query_events(filters)
+    return jsonify({"events": events})
 
-    filtered = []
-    for e in events:
-        add = True
-        # Filter by date
-        if start_date:
-            add &= e['Date'] >= start_date
-        if end_date:
-            add &= e['Date'] <= end_date
-        # Filter by duration
-        dur = duration_to_seconds(e['Crushing Duration'])
-        if min_duration:
-            add &= dur >= int(min_duration)
-        if max_duration:
-            add &= dur <= int(max_duration)
-        # Filter by Crushing ID
-        if min_id:
-            add &= int(e['Crushing ID'].split()[-1]) >= int(min_id)
-        if max_id:
-            add &= int(e['Crushing ID'].split()[-1]) <= int(max_id)
-        if add:
-            filtered.append(e)
-
-    return jsonify({"events": filtered})
-
-# Export CSV with filters
 @app.route('/api/export-csv')
 def export_csv():
-    return send_file('logs/events.csv', as_attachment=True)
+    events = query_events()
+    csv_path = "exports/events_export.csv"
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
 
-# Download image
+    with open(csv_path, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=['Crushing ID','Date','Event Timestamp','Crushing Duration','Alarm','Alarm Timestamp','Image Path'])
+        writer.writeheader()
+        for e in events:
+            writer.writerow(e)
+
+    return send_file(csv_path, as_attachment=True)
+
 @app.route('/download/<filename>')
 def download_file(filename):
     return send_file(f'images/event_images/{filename}', as_attachment=True)
 
-# Alarm OFF endpoint
 @app.route('/alarm/off')
 def alarm_off():
-    # GPIO code to turn siren OFF here
+    # GPIO code to turn siren OFF goes here
     print("Alarm OFF triggered")
     return "OK"
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
