@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Piglet Crushing Events Log</title>
+<style>
+    /* --- Basic styles --- */
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family: sans-serif; background:#1a4d3a; color:#fff; padding:20px; min-height:100vh; }
+    .container { max-width:1200px; margin:0 auto; }
+
+    /* --- Header --- */
+    .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; background:linear-gradient(135deg, #1a4d3a 0%, #2a6b54 100%); padding:20px; border-radius:8px; }
+    .header-left h1 { font-size:28px; margin-bottom:8px; }
+    .header-left p { font-size:14px; color:#b3d9c6; margin-bottom:12px; }
+    .info-row { display:flex; gap:60px; font-size:14px; }
+    .info-item { display:flex; align-items:center; gap:8px; }
+
+    /* --- Alarm OFF button --- */
+    .status-badge { display:flex; flex-direction:column; align-items:center; gap:8px; }
+    .toggle-switch { position: relative; width:50px; height:28px; background-color:#d32f2f; border-radius:14px; cursor:pointer; }
+    .toggle-circle { position:absolute; top:2px; left:2px; width:24px; height:24px; background:#fff; border-radius:50%; }
+
+    /* --- Controls and filters --- */
+    .controls-bar { display:flex; gap:12px; margin-bottom:20px; flex-wrap:wrap; align-items:center; }
+    .dropdown-container { position:relative; }
+    .dropdown-btn { background:#a8d5ba; color:#1a4d3a; padding:8px 16px; border:none; border-radius:6px; cursor:pointer; font-size:14px; font-weight:600; }
+    .dropdown-content { position:absolute; background:#2a6b54; min-width:320px; border-radius:8px; max-height:0; overflow:hidden; transition:max-height 0.3s; top:100%; left:0; margin-top:8px; border:1px solid #3d8b6d; }
+    .dropdown-content.show { max-height:600px; padding:16px; }
+
+    .filter-group { margin-bottom:16px; }
+    .filter-label { font-size:12px; font-weight:600; margin-bottom:6px; color:#a8d5ba; text-transform:uppercase; }
+    .filter-inputs { display:flex; gap:8px; }
+    .filter-input { flex:1; padding:8px; border:1px solid #3d8b6d; border-radius:4px; background:#1a4d3a; color:#fff; font-size:13px; }
+    .quick-filters { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
+    .quick-filter-btn { padding:6px 10px; background:#1a4d3a; color:#a8d5ba; border:1px solid #3d8b6d; border-radius:4px; cursor:pointer; font-size:12px; }
+    .quick-filter-btn.active { background:#a8d5ba; color:#1a4d3a; }
+
+    .filter-actions { display:flex; gap:8px; margin-top:16px; border-top:1px solid #3d8b6d; padding-top:12px; }
+    .reset-btn { flex:1; background:#d32f2f; color:white; padding:8px; border:none; border-radius:4px; cursor:pointer; }
+    .close-btn { flex:1; background:#3d8b6d; color:white; padding:8px; border:none; border-radius:4px; cursor:pointer; }
+
+    /* Date pickers */
+    .date-pickers { display:flex; gap:12px; }
+    .date-picker-group input { padding:8px 12px; border:1px solid #3d8b6d; border-radius:4px; background:#2a6b54; color:#fff; }
+
+    /* Table */
+    .table-container { background:#fff; border-radius:8px; overflow:hidden; box-shadow:0 4px 12px rgba(0,0,0,0.15); color:#333; }
+    table { width:100%; border-collapse:collapse; display:none; }
+    th { background:#f5f5f5; padding:16px; text-align:left; border-bottom:2px solid #e0e0e0; font-size:13px; text-transform:uppercase; }
+    td { padding:14px 16px; border-bottom:1px solid #e0e0e0; font-size:13px; }
+    tr:hover { background:#f9f9f9; }
+    .status-activated { color:#4caf50; font-weight:600; }
+    .status-inactive { color:#999; font-weight:600; }
+    .download-btn { background:#a8d5ba; color:#1a4d3a; border:none; padding:6px 12px; border-radius:4px; cursor:pointer; font-size:12px; }
+
+    .empty-state, .loading { text-align:center; padding:20px; color:#666; }
+    .export-btn { background:#a8d5ba; color:#1a4d3a; padding:10px 16px; border:none; border-radius:6px; cursor:pointer; font-size:13px; font-weight:600; }
+
+</style>
+</head>
+<body>
+<div class="container">
+
+    <!-- Header -->
+    <div class="header">
+        <div class="header-left">
+            <h1>PIGLET CRUSHING EVENTS LOG</h1>
+            <p>Raspberry Pi 4B | Local Monitoring</p>
+            <div class="info-row">
+                <div class="info-item">
+                    <span id="current-date">Date: 00/00/00</span>
+                </div>
+                <div class="info-item">
+                    <span id="current-time">Time: 00:00:00</span>
+                </div>
+            </div>
+        </div>
+        <div class="status-badge">
+            <span>Alarm OFF</span>
+            <div class="toggle-switch" id="alarmOffButton" onclick="turnAlarmOff()">
+                <div class="toggle-circle"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls-bar">
+        <div class="dropdown-container">
+            <button class="dropdown-btn" id="filterBtn" onclick="toggleDropdown()">☰ Filters</button>
+            <div class="dropdown-content" id="filterDropdown">
+                <!-- Duration Filter -->
+                <div class="filter-group">
+                    <label class="filter-label">Crushing Duration</label>
+                    <div class="quick-filters">
+                        <button class="quick-filter-btn" onclick="setDurationFilter(0,10)">< 10s</button>
+                        <button class="quick-filter-btn" onclick="setDurationFilter(10,20)">10-20s</button>
+                        <button class="quick-filter-btn" onclick="setDurationFilter(20,999)"> > 20s</button>
+                    </div>
+                    <div class="filter-inputs" style="margin-top:8px;">
+                        <input type="number" id="minDuration" class="filter-input" placeholder="Min (s)" onchange="applyFilters()">
+                        <input type="number" id="maxDuration" class="filter-input" placeholder="Max (s)" onchange="applyFilters()">
+                    </div>
+                </div>
+                <!-- Crushing ID -->
+                <div class="filter-group">
+                    <label class="filter-label">Crushing ID Range</label>
+                    <div class="filter-inputs">
+                        <input type="number" id="minId" class="filter-input" placeholder="Min ID" onchange="applyFilters()">
+                        <input type="number" id="maxId" class="filter-input" placeholder="Max ID" onchange="applyFilters()">
+                    </div>
+                </div>
+                <div class="filter-actions">
+                    <button class="reset-btn" onclick="resetFilters()">Reset All</button>
+                    <button class="close-btn" onclick="toggleDropdown()">Close</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Date pickers -->
+        <div class="date-pickers">
+            <div class="date-picker-group">
+                <input type="date" id="startDate" onchange="applyFilters()">
+            </div>
+            <div class="date-picker-group">
+                <input type="date" id="endDate" onchange="applyFilters()">
+            </div>
+        </div>
+
+        <!-- Export -->
+        <button class="export-btn" onclick="exportCSV()">↓ Download CSV</button>
+    </div>
+
+    <!-- Table -->
+    <div class="table-container">
+        <div id="loadingState" class="loading" style="display:none;">Loading events...</div>
+        <table id="eventsTable">
+            <thead>
+                <tr>
+                    <th>Crushing ID</th>
+                    <th>Date</th>
+                    <th>Event Timestamp</th>
+                    <th>Crushing Duration</th>
+                    <th>Alarm</th>
+                    <th>Alarm Timestamp</th>
+                    <th>Download Image</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+        </table>
+        <div id="emptyState" class="empty-state" style="display:none;">No events found.</div>
+    </div>
+</div>
+
+<script>
+    // Update clock
+    function updateClock() {
+        const now = new Date();
+        const date = now.toLocaleDateString('en-GB');
+        const time = now.toLocaleTimeString();
+        document.getElementById('current-date').textContent = `Date: ${date}`;
+        document.getElementById('current-time').textContent = `Time: ${time}`;
+    }
+
+    // Alarm OFF
+    function turnAlarmOff(){
+        fetch('/alarm/off').then(()=>alert('Alarm turned OFF')).catch(err=>console.error(err));
+        document.getElementById('alarmOffButton').style.backgroundColor = '#d32f2f';
+    }
+
+    // Toggle dropdown
+    function toggleDropdown(){ document.getElementById('filterDropdown').classList.toggle('show'); }
+
+    // Duration filter buttons
+    function setDurationFilter(min,max){
+        document.getElementById('minDuration').value=min;
+        document.getElementById('maxDuration').value=max;
+        applyFilters();
+    }
+
+    // Apply filters
+    async function applyFilters(){
+        const params = new URLSearchParams();
+        if(document.getElementById('startDate').value) params.append('start_date', document.getElementById('startDate').value);
+        if(document.getElementById('endDate').value) params.append('end_date', document.getElementById('endDate').value);
+        if(document.getElementById('minDuration').value) params.append('min_duration', document.getElementById('minDuration').value);
+        if(document.getElementById('maxDuration').value) params.append('max_duration', document.getElementById('maxDuration').value);
+        if(document.getElementById('minId').value) params.append('min_id', document.getElementById('minId').value);
+        if(document.getElementById('maxId').value) params.append('max_id', document.getElementById('maxId').value);
+        await loadEvents(params);
+    }
+
+    // Load events
+    async function loadEvents(params=''){
+        const loadingState=document.getElementById('loadingState');
+        const emptyState=document.getElementById('emptyState');
+        const table=document.getElementById('eventsTable');
+        const tbody=document.getElementById('tableBody');
+
+        loadingState.style.display='block';
+        table.style.display='none';
+        emptyState.style.display='none';
+
+        try{
+            const response=await fetch(`/api/events?${params}`);
+            const data=await response.json();
+            loadingState.style.display='none';
+            tbody.innerHTML='';
+            if(data.events.length===0){ emptyState.style.display='block'; return; }
+
+            data.events.forEach(event=>{
+                const row=document.createElement('tr');
+                row.innerHTML=`
+                    <td>${event['Crushing ID']||'-'}</td>
+                    <td>${event['Date']||'-'}</td>
+                    <td>${event['Event Timestamp']||'-'}</td>
+                    <td>${event['Crushing Duration']||'-'}</td>
+                    <td class="${event['Alarm']==='Activated'?'status-activated':'status-inactive'}">${event['Alarm']||'-'}</td>
+                    <td>${event['Alarm Timestamp']||'-'}</td>
+                    <td><button class="download-btn" onclick="downloadImage('${event['Image Path']||'#'}')">↓</button></td>
+                `;
+                tbody.appendChild(row);
+            });
+            table.style.display='table';
+        }catch(err){ console.error(err); loadingState.textContent='Error loading events'; }
+    }
+
+    // Download image
+    function downloadImage(path){
+        if(path==='#'){ alert('No image available'); return; }
+        window.open(path,'_blank');
+    }
+
+    // Reset filters
+    function resetFilters(){
+        document.getElementById('startDate').value='';
+        document.getElementById('endDate').value='';
+        document.getElementById('minDuration').value='';
+        document.getElementById('maxDuration').value='';
+        document.getElementById('minId').value='';
+        document.getElementById('maxId').value='';
+        document.querySelectorAll('.quick-filter-btn').forEach(btn=>btn.classList.remove('active'));
+        applyFilters();
+    }
+
+    // Export CSV
+    function exportCSV(){
+        const params=new URLSearchParams();
+        if(document.getElementById('startDate').value) params.append('start_date', document.getElementById('startDate').value);
+        if(document.getElementById('endDate').value) params.append('end_date', document.getElementById('endDate').value);
+        if(document.getElementById('minDuration').value) params.append('min_duration', document.getElementById('minDuration').value);
+        if(document.getElementById('maxDuration').value) params.append('max_duration', document.getElementById('maxDuration').value);
+        if(document.getElementById('minId').value) params.append('min_id', document.getElementById('minId').value);
+        if(document.getElementById('maxId').value) params.append('max_id', document.getElementById('maxId').value);
+        window.location.href=`/api/export-csv?${params}`;
+    }
+
+    // Init
+    updateClock();
+    setInterval(updateClock,1000);
+    loadEvents();
+</script>
+</body>
+</html>
