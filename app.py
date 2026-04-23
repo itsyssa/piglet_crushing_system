@@ -1,18 +1,46 @@
-from flask import Flask, render_template, request, send_file, jsonify
+from flask import Flask, render_template, request, jsonify
 import sqlite3
 import os
-from datetime import datetime
+import RPi.GPIO as GPIO
+import atexit
+import time
+import threading
+import subprocess
 
 app = Flask(__name__)
 
-# --- CONFIG ---
-DB_PATH = "piglet_crushing.db"
-IMAGE_DIR = "static/images"
-VIDEO_DIR = "static/videos"
+# =========================
+# GPIO SETUP (ACTIVE LOW)
+# =========================
+ALARM_PIN = 17
+gpio_lock = threading.Lock()
 
-# --- DATABASE SETUP ---
+def init_gpio():
+    GPIO.setwarnings(False)
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(ALARM_PIN, GPIO.OUT)
+    GPIO.output(ALARM_PIN, GPIO.HIGH)  # OFF state
+
+init_gpio()
+
+def cleanup_gpio():
+    print("CLEANUP GPIO", flush=True)
+    GPIO.output(ALARM_PIN, GPIO.HIGH)
+    GPIO.cleanup()
+
+atexit.register(cleanup_gpio)
+
+# =========================
+# SIREN PROCESS CONTROL
+# =========================
+siren_process = None
+
+# =========================
+# DATABASE SETUP
+# =========================
+DB_PATH = "piglet_crushing.db"
+
 def init_db():
-    """Initialize the SQLite database and table if not exists"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
@@ -31,125 +59,104 @@ def init_db():
     conn.commit()
     conn.close()
 
-init_db()  # Call once at startup
+init_db()
 
-# --- HELPER FUNCTIONS ---
-def save_event_to_db(event):
-    """Save an event dict to the database"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        INSERT INTO events 
-        (crushing_id, date, event_timestamp, crushing_duration, alarm, alarm_timestamp, image_path, video_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        event['crushing_id'],
-        event['date'],
-        event['event_timestamp'],
-        event['crushing_duration'],
-        event['alarm'],
-        event['alarm_timestamp'],
-        event['image_path'],
-        event['video_path']
-    ))
-    conn.commit()
-    conn.close()
-
+# =========================
+# QUERY EVENTS
+# =========================
 def query_events(filters=None):
-    """Query events from the database with optional filters"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
+
     query = "SELECT * FROM events WHERE 1=1"
     params = []
 
     if filters:
-        if 'start_date' in filters:
+        if filters.get('start_date'):
             query += " AND date >= ?"
             params.append(filters['start_date'])
-        if 'end_date' in filters:
+        if filters.get('end_date'):
             query += " AND date <= ?"
             params.append(filters['end_date'])
-        if 'min_id' in filters:
-            query += " AND id >= ?"
-            params.append(filters['min_id'])
-        if 'max_id' in filters:
-            query += " AND id <= ?"
-            params.append(filters['max_id'])
-        if 'min_duration' in filters:
-            query += " AND crushing_duration >= ?"
-            params.append(filters['min_duration'])
-        if 'max_duration' in filters:
-            query += " AND crushing_duration <= ?"
-            params.append(filters['max_duration'])
 
     c.execute(query, params)
     results = [dict(row) for row in c.fetchall()]
     conn.close()
     return results
 
-# --- ROUTES ---
+# =========================
+# ROUTES
+# =========================
 @app.route('/')
 def index():
-    """Render the main page"""
     return render_template('index.html')
 
 @app.route('/api/events')
 def api_events():
-    """Return events as JSON with optional filters"""
     filters = {
         'start_date': request.args.get('start_date'),
-        'end_date': request.args.get('end_date'),
-        'min_id': request.args.get('min_id'),
-        'max_id': request.args.get('max_id'),
-        'min_duration': request.args.get('min_duration'),
-        'max_duration': request.args.get('max_duration')
+        'end_date': request.args.get('end_date')
     }
-    filters = {k: v for k, v in filters.items() if v is not None and v != ''}
-    events = query_events(filters)
-    return jsonify({"events": events})
+    filters = {k: v for k, v in filters.items() if v}
+    return jsonify({"events": query_events(filters)})
 
-@app.route('/api/export-csv')
-def export_csv():
-    """Export all events as CSV"""
-    import csv
-    events = query_events()
-    csv_path = "exports/events_export.csv"
-    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+# =========================
+# AI DETECTION → START SIREN
+# =========================
+@app.route('/detect', methods=['POST'])
+def detect():
+    global siren_process
 
-    with open(csv_path, 'w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=[
-            'crushing_id','date','event_timestamp','crushing_duration',
-            'alarm','alarm_timestamp','image_path','video_path'
-        ])
-        writer.writeheader()
-        for e in events:
-            writer.writerow(e)
+    data = request.get_json()
 
-    return send_file(csv_path, as_attachment=True)
+    if data.get("crushing", False):
+        if siren_process is None:
+            print("CRUSHING DETECTED → STARTING try.py LOOP")
 
-@app.route('/download/image/<filename>')
-def download_image(filename):
-    """Download an event image"""
-    path = os.path.join(IMAGE_DIR, filename)
-    if not os.path.exists(path):
-        return "File not found", 404
-    return send_file(path, as_attachment=True)
+            siren_process = subprocess.Popen(
+                ["python", "try.py"]
+            )
 
-@app.route('/download/video/<filename>')
-def download_video(filename):
-    """Download an event video"""
-    path = os.path.join(VIDEO_DIR, filename)
-    if not os.path.exists(path):
-        return "File not found", 404
-    return send_file(path, as_attachment=True)
+    return jsonify({"status": "received"})
 
+# =========================
+# STOP BUTTON (CTRL+C EQUIVALENT)
+# =========================
 @app.route('/alarm/off')
 def alarm_off():
-    """Turn off alarm (GPIO code goes here)"""
-    print("Alarm OFF triggered")
-    return "OK"
+    global siren_process
 
-# --- MAIN ---
+    print("STOP BUTTON PRESSED → TERMINATING PROCESS")
+
+    if siren_process:
+        siren_process.terminate()  # <-- THIS IS YOUR CTRL+C EQUIVALENT
+        siren_process = None
+
+    with gpio_lock:
+        GPIO.output(ALARM_PIN, GPIO.HIGH)
+
+    return jsonify({"status": "STOPPED"})
+
+# =========================
+# TEST ROUTE
+# =========================
+@app.route('/test')
+def test():
+    with gpio_lock:
+        GPIO.output(ALARM_PIN, GPIO.LOW)
+        time.sleep(1)
+        GPIO.output(ALARM_PIN, GPIO.HIGH)
+    return "TEST DONE"
+
+# =========================
+# RUN SERVER
+# =========================
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(
+        host='0.0.0.0',
+        port=5000,
+        debug=False,
+        threaded=True,
+        use_reloader=False
+    )
